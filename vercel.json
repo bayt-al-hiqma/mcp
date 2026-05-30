@@ -2,25 +2,14 @@
   "version": 2,
   "builds": [
     {
-      "src": "dist/index.js",
+      "src": "src/index.ts",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/mcp",
-      "dest": "dist/index.js"
-    },
-    {
-      "src": "/health",
-      "dest": "dist/index.js"
-    },
-    {
-      "src": "/",
-      "dest": "dist/index.js"
+      "src": "/(.*)",
+      "dest": "src/index.ts"
     }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  }
+  ]
 }
