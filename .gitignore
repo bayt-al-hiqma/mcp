@@ -1,0 +1,8 @@
+node_modules
+.next
+.env*.local
+coverage
+dist
+vault
+
+tsconfig.tsbuildinfo
