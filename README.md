@@ -1,6 +1,6 @@
 # Bayt al-Hiqma Personal Memory MCP
 
-Bayt al-Hiqma is a Vercel-ready MCP server for daily ChatGPT memory. It exposes an authenticated JSON-RPC endpoint that reads and writes a user-owned Markdown vault, preserving notes as plain Markdown with common frontmatter so the vault remains usable in Obsidian or any editor.
+Bayt al-Hiqma is a Vercel-ready MCP server for daily ChatGPT memory. It exposes a JSON-RPC endpoint with no MCP authentication for ChatGPT compatibility. The server reads and writes a user-owned Markdown vault, preserving notes as plain Markdown with common frontmatter so the vault remains usable in Obsidian or any editor.
 
 ## Features
 
@@ -15,7 +15,7 @@ Bayt al-Hiqma is a Vercel-ready MCP server for daily ChatGPT memory. It exposes 
 ```bash
 npm install
 cp .env.example .env.local
-# set VAULT_BACKEND=local, MCP_AUTH_TOKEN, and LOCAL_VAULT_DIR
+# set VAULT_BACKEND=local and LOCAL_VAULT_DIR
 npm run dev
 ```
 
@@ -29,11 +29,11 @@ npm run build
 
 ## Deployment
 
-Deploy to Vercel with server-side environment variables:
+Deploy to Vercel with server-side environment variables. Because ChatGPT MCP currently supports OAuth or no auth (not arbitrary bearer-token auth), this implementation uses no auth for `/api/mcp`; keep the deployment URL private or put OAuth/gateway protection in front if required:
 
 | Variable | Purpose |
 | --- | --- |
-| `MCP_AUTH_TOKEN` | Bearer token required for `/api/mcp` and `/api/diagnostics`. |
+| `DIAGNOSTICS_TOKEN` | Optional bearer token for `/api/diagnostics`; `/api/mcp` is intentionally no-auth for ChatGPT compatibility. |
 | `VAULT_BACKEND` | Use `github` on Vercel. |
 | `GITHUB_TOKEN` | Token that can read/write the Markdown vault repository. |
 | `GITHUB_OWNER` | Vault repository owner or organization. |
@@ -51,9 +51,9 @@ The durable vault should be GitHub or another future remote backend in productio
 
 ## Endpoints
 
-- `POST /api/mcp`: MCP JSON-RPC over HTTPS. Send `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+- `POST /api/mcp`: MCP JSON-RPC over HTTPS. Configure ChatGPT with **No authentication**.
 - `GET /api/health`: public configuration health check without secrets.
-- `GET /api/diagnostics`: authenticated redacted diagnostics.
+- `GET /api/diagnostics`: redacted diagnostics; send `Authorization: Bearer <DIAGNOSTICS_TOKEN>` only if `DIAGNOSTICS_TOKEN` is set.
 - `/`: setup page describing configuration and ChatGPT connection.
 
 ## ChatGPT usage guidance

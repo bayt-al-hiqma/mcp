@@ -12,7 +12,6 @@ import { configStatus } from "../lib/config";
 let tmp: string;
 const config = {
   backend: "local" as const,
-  authToken: "test-token",
   githubBranch: "main",
   vaultRoot: "",
   localVaultDir: "",
@@ -26,7 +25,7 @@ const config = {
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), "memory-mcp-"));
-  process.env.MCP_AUTH_TOKEN = "test-token";
+  delete process.env.DIAGNOSTICS_TOKEN;
   process.env.LOCAL_VAULT_DIR = tmp;
   process.env.VAULT_BACKEND = "local";
 });
@@ -104,6 +103,6 @@ describe("search, context, writes, and health", () => {
     await m.createNote({ path: "Notes/Safe.md", title: "Safe", body: "# Safe" });
     await expect(m.createNote({ path: "Notes/Safe.md", title: "Safe", body: "Again" })).rejects.toThrow(/overwrite/i);
     await expect(m.updateSection({ path: "Notes/Safe.md", heading: "X", content: "Y", expectedSha: "stale" })).rejects.toThrow(/Conflict/i);
-    expect(configStatus()).toMatchObject({ ok: true, backend: "local" });
+    expect(configStatus()).toMatchObject({ ok: true, backend: "local", configured: { mcpAuth: "none", diagnosticsProtected: false } });
   });
 });

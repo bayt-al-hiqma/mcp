@@ -2,7 +2,7 @@ export type VaultBackendKind = "github" | "local";
 
 export type AppConfig = {
   backend: VaultBackendKind;
-  authToken?: string;
+  diagnosticsToken?: string;
   githubToken?: string;
   githubOwner?: string;
   githubRepo?: string;
@@ -28,7 +28,7 @@ export function getConfig(): AppConfig {
   const backend = (process.env.VAULT_BACKEND === "github" ? "github" : "local") as VaultBackendKind;
   return {
     backend,
-    authToken: process.env.MCP_AUTH_TOKEN,
+    diagnosticsToken: process.env.DIAGNOSTICS_TOKEN,
     githubToken: process.env.GITHUB_TOKEN,
     githubOwner: process.env.GITHUB_OWNER,
     githubRepo: process.env.GITHUB_REPO,
@@ -46,15 +46,16 @@ export function getConfig(): AppConfig {
 
 export function configStatus(config = getConfig()) {
   const required = config.backend === "github"
-    ? ["MCP_AUTH_TOKEN", "GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"]
-    : ["MCP_AUTH_TOKEN", "LOCAL_VAULT_DIR"];
+    ? ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"]
+    : ["LOCAL_VAULT_DIR"];
   const missing = required.filter((name) => !process.env[name]);
   return {
     ok: missing.length === 0,
     backend: config.backend,
     missing,
     configured: {
-      auth: Boolean(config.authToken),
+      mcpAuth: "none",
+      diagnosticsProtected: Boolean(config.diagnosticsToken),
       githubOwner: Boolean(config.githubOwner),
       githubRepo: Boolean(config.githubRepo),
       githubBranch: config.githubBranch,
