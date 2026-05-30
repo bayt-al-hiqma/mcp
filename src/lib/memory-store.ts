@@ -5,7 +5,7 @@
 import { Config, Note, SearchResult, NoteContext, BacklinkInfo, UnlinkedMention } from '../types/index.js';
 import { GitHubVault } from './vault.js';
 import { MarkdownParser } from './markdown-parser.js';
-import { ensureMarkdownExtension, stripMarkdownExtension, getFilenameWithoutExtension } from './path-safety.js';
+import { ensureMarkdownExtension, stripMarkdownExtension } from './path-safety.js';
 
 export class MemoryStore {
   private vault: GitHubVault;

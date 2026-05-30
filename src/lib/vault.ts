@@ -4,7 +4,7 @@
 
 import { Octokit } from '@octokit/rest';
 import { Config } from '../types/index.js';
-import { validateVaultPath, ensureMarkdownExtension } from './path-safety.js';
+import { validateVaultPath } from './path-safety.js';
 
 export class GitHubVault {
   private octokit: Octokit;
@@ -129,26 +129,31 @@ export class GitHubVault {
    * Recursively list all markdown files
    */
   private async listFilesRecursive(path: string, files: string[]): Promise<void> {
-    const { data } = await this.octokit.repos.getContent({
+    const params: any = {
       owner: this.config.vaultOwner,
       repo: this.config.vaultRepo,
-      path: path || undefined,
       ref: this.config.vaultBranch
-    });
+    };
+
+    if (path) {
+      params.path = path;
+    }
+
+    const { data } = await this.octokit.repos.getContent(params);
 
     if (!Array.isArray(data)) {
       return;
     }
 
     for (const item of data) {
-      if (item.type === 'file' && item.path.endsWith('.md')) {
+      if (item.type === 'file' && item.path && item.path.endsWith('.md')) {
         // Remove vault root prefix if present
         let relativePath = item.path;
         if (this.config.vaultRoot && relativePath.startsWith(this.config.vaultRoot + '/')) {
           relativePath = relativePath.slice(this.config.vaultRoot.length + 1);
         }
         files.push(relativePath);
-      } else if (item.type === 'dir') {
+      } else if (item.type === 'dir' && item.path) {
         await this.listFilesRecursive(item.path, files);
       }
     }
@@ -176,7 +181,7 @@ export class GitHubVault {
         });
 
         for (const file of commitData.files || []) {
-          if (file.filename.endsWith('.md') && !fileChanges.has(file.filename)) {
+          if (file.filename && file.filename.endsWith('.md') && !fileChanges.has(file.filename)) {
             let relativePath = file.filename;
             if (this.config.vaultRoot && relativePath.startsWith(this.config.vaultRoot + '/')) {
               relativePath = relativePath.slice(this.config.vaultRoot.length + 1);

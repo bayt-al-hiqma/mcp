@@ -10,7 +10,7 @@ import {
   getFilenameWithoutExtension,
   getDailyNotePath,
   PathSafetyError
-} from '../src/lib/path-safety.js';
+} from '../../dist/lib/path-safety.js';
 
 describe('Path Safety', () => {
   describe('validateVaultPath', () => {

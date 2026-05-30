@@ -41,7 +41,6 @@ const JSONRPC_ERRORS = {
 export class MCPServer {
   private config: Config;
   private toolHandlers: ToolHandlers;
-  private initialized = false;
 
   constructor(config: Config) {
     this.config = config;
@@ -85,8 +84,6 @@ export class MCPServer {
    * Handle initialize method
    */
   private handleInitialize(request: JSONRPCRequest): JSONRPCResponse {
-    this.initialized = true;
-
     return this.successResponse(request.id, {
       protocolVersion: '1.0',
       serverInfo: {

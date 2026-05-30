@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { MarkdownParser } from '../src/lib/markdown-parser.js';
+import { MarkdownParser } from '../../dist/lib/markdown-parser.js';
 
 describe('MarkdownParser', () => {
   describe('parse', () => {
@@ -86,10 +86,11 @@ Content 2`;
 
       const note = MarkdownParser.parse('test.md', content);
 
-      expect(note.sections).toHaveLength(2);
-      expect(note.sections[0].heading).toBe('Section 1');
-      expect(note.sections[0].content).toContain('Content 1');
-      expect(note.sections[1].heading).toBe('Section 2');
+      expect(note.sections).toHaveLength(3); // Main Title + 2 sections
+      expect(note.sections[0].heading).toBe('Main Title');
+      expect(note.sections[1].heading).toBe('Section 1');
+      expect(note.sections[1].content).toContain('Content 1');
+      expect(note.sections[2].heading).toBe('Section 2');
     });
 
     it('should extract tasks', () => {

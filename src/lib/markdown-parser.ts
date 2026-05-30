@@ -57,7 +57,7 @@ export class MarkdownParser {
     if (!frontmatter.aliases) return [];
 
     if (Array.isArray(frontmatter.aliases)) {
-      return frontmatter.aliases.map(a => String(a));
+      return frontmatter.aliases.map((a: any) => String(a));
     }
 
     if (typeof frontmatter.aliases === 'string') {
@@ -78,7 +78,7 @@ export class MarkdownParser {
       const fmTags = Array.isArray(frontmatter.tags)
         ? frontmatter.tags
         : [frontmatter.tags];
-      fmTags.forEach(tag => tags.add(String(tag).replace(/^#/, '')));
+      fmTags.forEach((tag: any) => tags.add(String(tag).replace(/^#/, '')));
     }
 
     // From inline content (#tag syntax)
@@ -136,7 +136,7 @@ export class MarkdownParser {
   private static extractSections(content: string): Section[] {
     const sections: Section[] = [];
     const lines = content.split('\n');
-    let currentSection: Section | null = null;
+    let currentSection: Partial<Section> | null = null;
 
     lines.forEach((line, index) => {
       const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
@@ -144,8 +144,16 @@ export class MarkdownParser {
       if (headingMatch) {
         // Close previous section
         if (currentSection) {
-          currentSection.endLine = index;
-          sections.push(currentSection);
+          const section = currentSection as any;
+          if (section.heading && section.level !== undefined) {
+            sections.push({
+              heading: section.heading,
+              level: section.level,
+              content: section.content || '',
+              startLine: section.startLine,
+              endLine: index
+            });
+          }
         }
 
         // Start new section
@@ -157,14 +165,22 @@ export class MarkdownParser {
           endLine: lines.length
         };
       } else if (currentSection) {
-        currentSection.content += line + '\n';
+        currentSection.content = (currentSection.content || '') + line + '\n';
       }
     });
 
     // Close final section
     if (currentSection) {
-      currentSection.endLine = lines.length;
-      sections.push(currentSection);
+      const section = currentSection as any;
+      if (section.heading && section.level !== undefined) {
+        sections.push({
+          heading: section.heading,
+          level: section.level,
+          content: section.content || '',
+          startLine: section.startLine,
+          endLine: lines.length
+        });
+      }
     }
 
     return sections;

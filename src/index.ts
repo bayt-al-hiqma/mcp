@@ -109,7 +109,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 /**
  * Health endpoint
  */
-async function handleHealth(req: IncomingMessage, res: ServerResponse) {
+async function handleHealth(_req: IncomingMessage, res: ServerResponse) {
   if (!config || configError) {
     return sendJSON(res, 503, {
       status: 'error',
@@ -199,7 +199,7 @@ async function handleMCP(req: IncomingMessage, res: ServerResponse) {
 /**
  * Landing page
  */
-function handleLanding(req: IncomingMessage, res: ServerResponse) {
+function handleLanding(_req: IncomingMessage, res: ServerResponse) {
   const html = `
 <!DOCTYPE html>
 <html lang="en">

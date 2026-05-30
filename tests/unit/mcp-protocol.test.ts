@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MCPServer } from '../src/lib/mcp-server.js';
-import { Config } from '../src/types/index.js';
+import { MCPServer } from '../../dist/lib/mcp-server.js';
+import { Config } from '../../dist/types/index.js';
 
 describe('MCP Protocol', () => {
   let config: Config;
