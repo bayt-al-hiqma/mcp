@@ -38,11 +38,8 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
-  console.log("[v0] Form data entries:", [...formData.entries()].map(([k, v]) => `${k}=${typeof v === 'string' ? v : '[File]'}`));
   const oauthParams = oauthParamsFromForm(formData);
-  console.log("[v0] OAuth params from form:", [...oauthParams.entries()]);
   const validation = validateAuthorizationParams(oauthParams);
-  console.log("[v0] Validation result ok:", validation.ok);
   if (!validation.ok) return validation.response;
 
   const oauth = getOAuthConfig({ request });
@@ -74,7 +71,6 @@ export async function POST(request: NextRequest) {
 function validateAuthorizationParams(params: URLSearchParams): ValidationResult {
   const state = paramValue(params, "state");
   const redirectUriResult = parseRedirectUri(paramValue(params, "redirect_uri"));
-  console.log("[v0] Validating params - redirect_uri result:", redirectUriResult.ok, redirectUriResult.ok ? redirectUriResult.redirectUri.toString() : (redirectUriResult as { message: string }).message);
   if (!redirectUriResult.ok) {
     return {
       ok: false,
@@ -83,7 +79,6 @@ function validateAuthorizationParams(params: URLSearchParams): ValidationResult 
   }
 
   const missing = REQUIRED_PARAMS.filter((name) => !paramValue(params, name));
-  console.log("[v0] Missing params:", missing);
   if (missing.length > 0) {
     return {
       ok: false,
