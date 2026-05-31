@@ -169,7 +169,7 @@ function renderAuthorizationForm(params: URLSearchParams): string {
   <body>
     <main>
       <h1>Authorize Bayt al-Hiqma</h1>
-      <form method="post">
+      <form method="post" action="/oauth/authorize">
         ${hiddenInputs}
         <p>
           <label for="password">Owner password</label><br>
