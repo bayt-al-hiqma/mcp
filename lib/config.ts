@@ -3,6 +3,11 @@ export type VaultBackendKind = "github" | "local";
 export type AppConfig = {
   backend: VaultBackendKind;
   diagnosticsToken?: string;
+  oauthOwnerPassword?: string;
+  oauthTokenSecret?: string;
+  oauthResource?: string;
+  oauthTokenTtlSeconds?: number;
+  oauthCodeTtlSeconds?: number;
   githubToken?: string;
   githubOwner?: string;
   githubRepo?: string;
@@ -24,11 +29,23 @@ function numberEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function optionalNumberEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function getConfig(): AppConfig {
   const backend = (process.env.VAULT_BACKEND === "github" ? "github" : "local") as VaultBackendKind;
   return {
     backend,
     diagnosticsToken: process.env.DIAGNOSTICS_TOKEN,
+    oauthOwnerPassword: process.env.OAUTH_OWNER_PASSWORD,
+    oauthTokenSecret: process.env.OAUTH_TOKEN_SECRET,
+    oauthResource: process.env.OAUTH_RESOURCE,
+    oauthTokenTtlSeconds: optionalNumberEnv("OAUTH_TOKEN_TTL_SECONDS"),
+    oauthCodeTtlSeconds: optionalNumberEnv("OAUTH_CODE_TTL_SECONDS"),
     githubToken: process.env.GITHUB_TOKEN,
     githubOwner: process.env.GITHUB_OWNER,
     githubRepo: process.env.GITHUB_REPO,
@@ -49,12 +66,16 @@ export function configStatus(config = getConfig()) {
     ? ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"]
     : ["LOCAL_VAULT_DIR"];
   const missing = required.filter((name) => !process.env[name]);
+  const mcpAuth = config.oauthOwnerPassword && config.oauthTokenSecret ? "oauth" : "none";
   return {
     ok: missing.length === 0,
     backend: config.backend,
     missing,
     configured: {
-      mcpAuth: "none",
+      mcpAuth,
+      oauthResource: config.oauthResource,
+      oauthTokenTtlSeconds: config.oauthTokenTtlSeconds,
+      oauthCodeTtlSeconds: config.oauthCodeTtlSeconds,
       diagnosticsProtected: Boolean(config.diagnosticsToken),
       githubOwner: Boolean(config.githubOwner),
       githubRepo: Boolean(config.githubRepo),
