@@ -292,7 +292,7 @@ function verifyPayload<T extends { kind: string; iss: string; aud: string; exp: 
 
   const payload = parseBase64UrlJson<T>(encodedPayload)
   if (!payload || payload.kind !== kind) return null
-  if (payload.iss !== config.issuer || payload.aud !== config.resource) return null
+  if (!urlsEquivalent(payload.iss, config.issuer) || !urlsEquivalent(payload.aud, config.resource)) return null
   if (!Number.isFinite(payload.exp) || payload.exp <= epochSeconds(now)) return null
 
   return payload
@@ -362,6 +362,20 @@ function safeEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left)
   const rightBuffer = Buffer.from(right)
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer)
+}
+
+function urlsEquivalent(a: string, b: string): boolean {
+  try {
+    const urlA = new URL(a)
+    const urlB = new URL(b)
+    // Normalize: compare origin + pathname without trailing slash
+    const normalizedA = urlA.origin + urlA.pathname.replace(/\/$/, "")
+    const normalizedB = urlB.origin + urlB.pathname.replace(/\/$/, "")
+    return normalizedA.toLowerCase() === normalizedB.toLowerCase()
+  } catch {
+    // Fallback to direct comparison if URLs are invalid
+    return a === b
+  }
 }
 
 function oauthRequested(env: NodeJS.ProcessEnv, secret?: string): boolean {
