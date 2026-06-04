@@ -19,7 +19,9 @@ function unauthorized(config: ReturnType<typeof getOAuthConfig>) {
 export async function POST(request: NextRequest) {
   const oauth = getOAuthConfig({ request });
   if (oauth.enabled && !verifyAccessToken(bearerToken(request) ?? "", { config: oauth, requiredScopes: OAUTH_SCOPE })) return unauthorized(oauth);
-  return NextResponse.json(await handleJsonRpc(await request.text()));
+  const raw = await request.text();
+  if (isJsonRpcNotification(raw)) return new NextResponse(null, { status: 202 });
+  return NextResponse.json(await handleJsonRpc(raw));
 }
 
 export async function GET(request: NextRequest) {
@@ -31,4 +33,22 @@ export async function GET(request: NextRequest) {
     authentication: oauth.enabled ? "oauth" : "none",
     ...(oauth.enabled ? { oauth: { resource_metadata: oauth.resourceMetadataUrl, scope: OAUTH_SCOPE } } : {}),
   });
+}
+
+function isJsonRpcNotification(raw: string): boolean {
+  let message: unknown;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+
+  return Boolean(
+    message
+      && typeof message === "object"
+      && !Array.isArray(message)
+      && (message as Record<string, unknown>).jsonrpc === "2.0"
+      && typeof (message as Record<string, unknown>).method === "string"
+      && !("id" in message)
+  );
 }

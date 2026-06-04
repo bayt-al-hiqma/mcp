@@ -217,6 +217,32 @@ describe("MCP OAuth enforcement", () => {
       result: {},
     });
   });
+
+  it("accepts authenticated JSON-RPC notifications with an empty 202 response", async () => {
+    stubOAuthEnv();
+    const token = issueAccessToken(
+      {
+        clientId: CLIENT_ID,
+        scope: OAUTH_SCOPE,
+        ttlSeconds: 60,
+      },
+      getOAuthConfig(),
+    );
+
+    const response = await mcpPOST(new NextRequest(`${BASE_URL}/api/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    }));
+
+    expect(response.status).toBe(202);
+    await expect(response.text()).resolves.toBe("");
+  });
 });
 
 describe("Dynamic Client Registration (RFC 7591)", () => {
