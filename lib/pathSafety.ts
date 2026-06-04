@@ -10,18 +10,6 @@ export function normalizeVaultPath(input: string): string {
   return normalized;
 }
 
-export function normalizeVaultFolderPath(input = ""): string {
-  if (typeof input !== "string") throw new Error("Path must be a string.");
-  const normalizedSlashes = input.replace(/\\/g, "/").trim().replace(/^\/+|\/+$/g, "");
-  if (!normalizedSlashes) return "";
-  if (/^[a-zA-Z]:\//.test(normalizedSlashes)) throw new Error("Absolute vault paths are not allowed.");
-  const normalized = path.normalize(normalizedSlashes);
-  if (normalized === ".") return "";
-  if (normalized.startsWith("../") || normalized === ".." || normalized.includes("/../")) throw new Error("Path traversal is not allowed.");
-  if (normalized.endsWith(".md")) return normalizeVaultPath(normalized).replace(/\\/g, "/");
-  return normalized.replace(/\\/g, "/");
-}
-
 export function joinVaultRoot(root: string, child: string): string {
   const safeChild = normalizeVaultPath(child);
   const safeRoot = root.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");

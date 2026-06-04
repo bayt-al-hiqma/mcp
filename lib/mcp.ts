@@ -7,12 +7,6 @@ const toolDescriptions = [
   { name: "memory_resolve", description: "Resolve a path, filename, title, alias, or wikilink to likely notes, surfacing ambiguous matches.", inputSchema: { type: "object", properties: { reference: { type: "string" } }, required: ["reference"] } },
   { name: "memory_list_recent", description: "List recently changed or available notes.", inputSchema: { type: "object", properties: { limit: { type: "number" } } } },
   { name: "daily_append", description: "Append a concise day-specific distilled memory entry to a daily note; creates the daily note if needed.", inputSchema: { type: "object", properties: { date: { type: "string" }, kind: { type: "string" }, text: { type: "string" }, links: { type: "array", items: { type: "string" } } }, required: ["text"] } },
-  { name: "note_read_raw", description: "Read the exact Markdown body, parsed frontmatter, and SHA for one note without truncation or interpretation.", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
-  { name: "note_replace_body", description: "Replace only a note's Markdown body while preserving existing frontmatter; requires expectedSha and fails on conflicts.", inputSchema: { type: "object", properties: { path: { type: "string" }, body: { type: "string" }, expectedSha: { type: "string" } }, required: ["path", "body", "expectedSha"] } },
-  { name: "note_move", description: "Move or rename one note without overwriting and without rewriting links; requires expectedSha.", inputSchema: { type: "object", properties: { sourcePath: { type: "string" }, destinationPath: { type: "string" }, expectedSha: { type: "string" } }, required: ["sourcePath", "destinationPath", "expectedSha"] } },
-  { name: "note_trash", description: "Move one note to Archive/Trash without permanent deletion; requires expectedSha and never overwrites trash files.", inputSchema: { type: "object", properties: { path: { type: "string" }, expectedSha: { type: "string" } }, required: ["path", "expectedSha"] } },
-  { name: "vault_tree", description: "Return a simple Markdown note folder/file tree for the vault or a subfolder.", inputSchema: { type: "object", properties: { path: { type: "string" }, depth: { type: "number" } } } },
-  { name: "note_diff", description: "Preview a unified diff between the current note body and a proposed replacement body without writing.", inputSchema: { type: "object", properties: { path: { type: "string" }, proposedBody: { type: "string" } }, required: ["path", "proposedBody"] } },
   { name: "note_create", description: "Create a new Markdown note with metadata, refusing to overwrite existing notes.", inputSchema: { type: "object", properties: { path: { type: "string" }, title: { type: "string" }, body: { type: "string" }, type: { type: "string" }, tags: { type: "array", items: { type: "string" } }, aliases: { type: "array", items: { type: "string" } }, links: { type: "array", items: { type: "string" } } }, required: ["path", "title", "body"] } },
   { name: "canonical_upsert", description: "Create or update a durable canonical memory with current state and history.", inputSchema: { type: "object", properties: { title: { type: "string" }, summary: { type: "string" }, path: { type: "string" }, tags: { type: "array", items: { type: "string" } }, aliases: { type: "array", items: { type: "string" } }, links: { type: "array", items: { type: "string" } }, expectedSha: { type: "string" } }, required: ["title", "summary"] } },
   { name: "decision_record", description: "Create an auditable decision record with context, options, chosen path, rationale, consequences, and related links.", inputSchema: { type: "object", properties: { title: { type: "string" }, context: { type: "string" }, options: { type: "array", items: { type: "string" } }, chosen: { type: "string" }, rationale: { type: "string" }, consequences: { type: "string" }, links: { type: "array", items: { type: "string" } }, date: { type: "string" } }, required: ["title", "context", "chosen", "rationale"] } },
@@ -54,12 +48,6 @@ export async function callTool(name: string, args: any) {
     case "memory_resolve": return memory.resolve(String(args.reference));
     case "memory_list_recent": return memory.listNotes(args.limit);
     case "daily_append": return memory.appendDaily(args);
-    case "note_read_raw": return memory.readRaw(String(args.path));
-    case "note_replace_body": return memory.replaceBody(args);
-    case "note_move": return memory.moveNote(args);
-    case "note_trash": return memory.trashNote(args);
-    case "vault_tree": return memory.tree(args.path, args.depth);
-    case "note_diff": return memory.diff(args);
     case "note_create": return memory.createNote(args);
     case "canonical_upsert": return memory.upsertCanonical(args);
     case "decision_record": return memory.recordDecision(args);
