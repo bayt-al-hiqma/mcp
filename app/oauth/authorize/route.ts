@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { getOAuthConfig, issueAuthorizationCode as issueSharedAuthorizationCode } from "../../../lib/oauth";
+import { getOAuthConfig, isClientAllowed, issueAuthorizationCode as issueSharedAuthorizationCode } from "../../../lib/oauth";
 
 export const runtime = "nodejs";
 
@@ -25,6 +25,12 @@ export async function GET(request: NextRequest) {
   if (!validation.ok) return validation.response;
 
   const oauth = getOAuthConfig({ request });
+
+  // Validate client is allowed (static client_id or dynamically registered)
+  if (!isClientAllowed(validation.params.clientId, validation.params.redirectUri, oauth)) {
+    return redirectWithError(validation.redirectUri, "unauthorized_client", "Client is not authorized or redirect_uri is not registered.", validation.params.state);
+  }
+
   if (!resourceMatches(validation.params.resource, oauth.resource)) {
     return redirectWithError(validation.redirectUri, "invalid_request", "resource does not match this MCP server.", validation.params.state);
   }
@@ -43,6 +49,12 @@ export async function POST(request: NextRequest) {
   if (!validation.ok) return validation.response;
 
   const oauth = getOAuthConfig({ request });
+
+  // Validate client is allowed (static client_id or dynamically registered)
+  if (!isClientAllowed(validation.params.clientId, validation.params.redirectUri, oauth)) {
+    return redirectWithError(validation.redirectUri, "unauthorized_client", "Client is not authorized or redirect_uri is not registered.", validation.params.state);
+  }
+
   if (!resourceMatches(validation.params.resource, oauth.resource)) {
     return redirectWithError(validation.redirectUri, "invalid_request", "resource does not match this MCP server.", validation.params.state);
   }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOAuthConfig, issueAccessToken, verifyAuthorizationCode } from "../../../lib/oauth";
+import { getOAuthConfig, getRegisteredClient, issueAccessToken, verifyAuthorizationCode } from "../../../lib/oauth";
 
 export const runtime = "nodejs";
 
@@ -44,7 +44,21 @@ export async function POST(request: NextRequest) {
   }
 
   if (oauth.allowedClientId && parsed.clientId !== oauth.allowedClientId) {
-    return oauthError("invalid_client", "client_id is not allowed.", 401);
+    // Check if it's a valid dynamically registered client
+    const dynamicClient = getRegisteredClient(parsed.clientId);
+    if (!dynamicClient) {
+      return oauthError("invalid_client", "client_id is not allowed.", 401);
+    }
+    // Validate redirect_uri matches a registered URI for dynamic clients
+    if (!dynamicClient.redirect_uris.includes(parsed.redirectUri)) {
+      return oauthError("invalid_grant", "redirect_uri does not match registered URIs.", 400);
+    }
+  } else if (!oauth.allowedClientId) {
+    // No static client configured - check if it's a dynamically registered client
+    const dynamicClient = getRegisteredClient(parsed.clientId);
+    if (dynamicClient && !dynamicClient.redirect_uris.includes(parsed.redirectUri)) {
+      return oauthError("invalid_grant", "redirect_uri does not match registered URIs.", 400);
+    }
   }
   if (parsed.resource && parsed.resource !== oauth.resource) {
     return oauthError("invalid_grant", "resource does not match this MCP server.", 400);
