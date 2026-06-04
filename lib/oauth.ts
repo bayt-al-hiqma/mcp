@@ -104,13 +104,16 @@ export function validateClientMetadata(metadata: unknown): { ok: true; metadata:
   }
 
   // Validate grant_types if provided
+  // We accept refresh_token in DCR metadata for compatibility with clients like ChatGPT,
+  // but we only actually support authorization_code. The response will reflect what we support.
+  const ALLOWED_GRANT_TYPES = ["authorization_code", "refresh_token"] as const
   if (meta.grant_types !== undefined) {
     if (!Array.isArray(meta.grant_types)) {
       return { ok: false, error: { error: "invalid_client_metadata", error_description: "grant_types must be an array." } }
     }
     for (const gt of meta.grant_types) {
-      if (gt !== "authorization_code") {
-        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Only authorization_code is supported.` } }
+      if (!ALLOWED_GRANT_TYPES.includes(gt as typeof ALLOWED_GRANT_TYPES[number])) {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Only authorization_code and refresh_token are accepted.` } }
       }
     }
   }
@@ -196,12 +199,14 @@ export function registerClient(metadata: OAuthClientMetadata, config = getOAuthC
   const clientId = generateClientId()
   const now = epochSeconds()
 
+  // Only store grant_types we actually support (authorization_code)
+  // Even if client requested refresh_token, we don't support it yet
   const client: RegisteredClient = {
     client_id: clientId,
     client_id_issued_at: now,
     redirect_uris: metadata.redirect_uris,
     token_endpoint_auth_method: "none",
-    grant_types: metadata.grant_types ?? ["authorization_code"],
+    grant_types: ["authorization_code"], // Only support authorization_code for now
     response_types: metadata.response_types ?? ["code"],
     client_name: metadata.client_name,
     client_uri: metadata.client_uri,
