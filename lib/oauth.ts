@@ -104,13 +104,14 @@ export function validateClientMetadata(metadata: unknown): { ok: true; metadata:
   }
 
   // Validate grant_types if provided
+  const SUPPORTED_GRANT_TYPES = ["authorization_code", "refresh_token"] as const
   if (meta.grant_types !== undefined) {
     if (!Array.isArray(meta.grant_types)) {
       return { ok: false, error: { error: "invalid_client_metadata", error_description: "grant_types must be an array." } }
     }
     for (const gt of meta.grant_types) {
-      if (gt !== "authorization_code") {
-        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Only authorization_code is supported.` } }
+      if (!SUPPORTED_GRANT_TYPES.includes(gt as typeof SUPPORTED_GRANT_TYPES[number])) {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Supported: ${SUPPORTED_GRANT_TYPES.join(", ")}.` } }
       }
     }
   }
