@@ -104,13 +104,18 @@ export class MemoryService {
   }
 
   async trashNote(args: { path: string; expectedSha: string }) {
-    requireExpectedSha(args.expectedSha);
-    const current = await this.backend.readFile(args.path);
-    if (current.sha !== args.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
-    const trashPath = normalizeVaultPath(`Archive/Trash/${current.path}`);
-    if (await this.backend.exists(trashPath)) throw new Error(`Refusing to overwrite existing trash note: ${trashPath}`);
-    const moved = await this.backend.moveFile(current.path, trashPath, { expectedSha: args.expectedSha, message: `Trash note ${current.path}` });
-    return { path: current.path, trashPath: moved.path, oldSha: current.sha, newSha: moved.sha, summary: `Moved ${current.path} to trash at ${moved.path}.` };
+    const path = args?.path;
+    try {
+      requireExpectedSha(args.expectedSha);
+      const current = await this.backend.readFile(args.path);
+      if (current.sha !== args.expectedSha) throw new Error("SHA mismatch");
+      const trashPath = normalizeVaultPath(`Archive/Trash/${current.path}`);
+      if (await this.backend.exists(trashPath)) throw new Error(`Refusing to overwrite existing trash note: ${trashPath}`);
+      const moved = await this.backend.moveFile(current.path, trashPath, { expectedSha: args.expectedSha, message: `Trash note ${current.path}` });
+      return { path: current.path, oldSha: current.sha, trashPath: moved.path, success: true, summary: `Moved note to trash at ${moved.path}.` };
+    } catch (error) {
+      return { path, success: false, error: error instanceof Error ? error.message : "Failed to move note to trash." };
+    }
   }
 
   async tree(path = "", depth = 3) {
