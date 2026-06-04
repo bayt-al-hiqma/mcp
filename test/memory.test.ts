@@ -137,9 +137,9 @@ describe("search, context, writes, and health", () => {
 
     const movedRaw = await m.readRaw("Archive/Clean.md");
     const trashed = await m.trashNote({ path: "Archive/Clean.md", expectedSha: movedRaw.sha! });
-    expect(trashed.trashPath).toBe("Archive/Trash/Archive/Clean.md");
+    expect(trashed).toMatchObject({ path: "Archive/Clean.md", trashPath: "Archive/Trash/Archive/Clean.md", success: true });
     await expect(m.readRaw("Archive/Clean.md")).rejects.toThrow();
-    expect((await m.readRaw(trashed.trashPath)).body).toBe("# Messy\n\nClean body\n");
+    expect((await m.readRaw(trashed.trashPath!)).body).toBe("# Messy\n\nClean body\n");
   });
 
 });
