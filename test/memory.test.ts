@@ -105,4 +105,41 @@ describe("search, context, writes, and health", () => {
     await expect(m.updateSection({ path: "Notes/Safe.md", heading: "X", content: "Y", expectedSha: "stale" })).rejects.toThrow(/Conflict/i);
     expect(configStatus()).toMatchObject({ ok: true, backend: "local", configured: { mcpAuth: "none", diagnosticsProtected: false } });
   });
+  it("supports boring maintenance primitives for safe note cleanup", async () => {
+    await write("Inbox/Messy.md", "---\ntitle: Messy\ntags:\n  - cleanup\n---\n# Messy\n\nOld body\n");
+    await write("Projects/Nested/Plan.md", "# Plan\n");
+    const m = service();
+
+    const raw = await m.readRaw("Inbox/Messy.md");
+    expect(raw).toMatchObject({ path: "Inbox/Messy.md", frontmatter: { title: "Messy", tags: ["cleanup"] }, body: "# Messy\n\nOld body\n" });
+    expect(raw.sha).toBeDefined();
+
+    const preview = await m.diff({ path: "Inbox/Messy.md", proposedBody: "# Messy\n\nClean body\n" });
+    expect(preview.diff).toContain("-Old body");
+    expect(preview.diff).toContain("+Clean body");
+
+    await expect(m.replaceBody({ path: "Inbox/Messy.md", body: "# Messy\n\nClean body\n", expectedSha: "stale" })).rejects.toThrow(/Conflict/i);
+    const replaced = await m.replaceBody({ path: "Inbox/Messy.md", body: "# Messy\n\nClean body\n", expectedSha: raw.sha! });
+    expect(replaced).toMatchObject({ path: "Inbox/Messy.md", oldSha: raw.sha });
+    const reread = await m.readRaw("Inbox/Messy.md");
+    expect(reread.frontmatter).toEqual(raw.frontmatter);
+    expect(reread.body).toBe("# Messy\n\nClean body\n");
+
+    const tree = await m.tree("", 3);
+    expect(tree.tree.join("\n")).toContain("Inbox");
+    expect(tree.tree.join("\n")).toContain("Plan.md");
+
+    await write("Archive/Messy.md", "# Existing\n");
+    await expect(m.moveNote({ sourcePath: "Inbox/Messy.md", destinationPath: "Archive/Messy.md", expectedSha: reread.sha! })).rejects.toThrow(/overwrite/i);
+    const moved = await m.moveNote({ sourcePath: "Inbox/Messy.md", destinationPath: "Archive/Clean.md", expectedSha: reread.sha! });
+    expect(moved).toMatchObject({ sourcePath: "Inbox/Messy.md", destinationPath: "Archive/Clean.md" });
+    await expect(m.readRaw("Inbox/Messy.md")).rejects.toThrow();
+
+    const movedRaw = await m.readRaw("Archive/Clean.md");
+    const trashed = await m.trashNote({ path: "Archive/Clean.md", expectedSha: movedRaw.sha! });
+    expect(trashed.trashPath).toBe("Archive/Trash/Archive/Clean.md");
+    await expect(m.readRaw("Archive/Clean.md")).rejects.toThrow();
+    expect((await m.readRaw(trashed.trashPath)).body).toBe("# Messy\n\nClean body\n");
+  });
+
 });

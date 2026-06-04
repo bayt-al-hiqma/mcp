@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { AppConfig, getConfig } from "./config";
@@ -5,11 +6,13 @@ import { joinVaultRoot, normalizeVaultPath } from "./pathSafety";
 
 export type VaultFile = { path: string; content: string; sha?: string; updatedAt?: string };
 export type WriteOptions = { expectedSha?: string; message?: string };
+export type MoveOptions = { expectedSha: string; message?: string };
 
 export interface VaultBackend {
   listMarkdownFiles(): Promise<VaultFile[]>;
   readFile(filePath: string): Promise<VaultFile>;
   writeFile(filePath: string, content: string, options?: WriteOptions): Promise<VaultFile>;
+  moveFile(sourcePath: string, destinationPath: string, options: MoveOptions): Promise<VaultFile>;
   exists(filePath: string): Promise<boolean>;
 }
 
@@ -35,7 +38,8 @@ export class LocalVaultBackend implements VaultBackend {
           const stat = await fs.stat(full);
           if (stat.size <= this.maxFileSizeBytes) {
             const rel = path.relative(this.rootDir, full).replace(/\\/g, "/");
-            out.push({ path: rel, content: await fs.readFile(full, "utf8"), sha: String(stat.mtimeMs), updatedAt: stat.mtime.toISOString() });
+            const content = await fs.readFile(full, "utf8");
+            out.push({ path: rel, content, sha: contentSha(content), updatedAt: stat.mtime.toISOString() });
           }
         }
       }
@@ -48,7 +52,8 @@ export class LocalVaultBackend implements VaultBackend {
     const full = this.fullPath(filePath);
     const stat = await fs.stat(full);
     if (stat.size > this.maxFileSizeBytes) throw new Error("File exceeds MAX_FILE_SIZE_BYTES.");
-    return { path: normalizeVaultPath(filePath), content: await fs.readFile(full, "utf8"), sha: String(stat.mtimeMs), updatedAt: stat.mtime.toISOString() };
+    const content = await fs.readFile(full, "utf8");
+    return { path: normalizeVaultPath(filePath), content, sha: contentSha(content), updatedAt: stat.mtime.toISOString() };
   }
 
   async exists(filePath: string): Promise<boolean> {
@@ -66,6 +71,19 @@ export class LocalVaultBackend implements VaultBackend {
     await fs.writeFile(full, content, "utf8");
     return this.readFile(safe);
   }
+
+  async moveFile(sourcePath: string, destinationPath: string, options: MoveOptions): Promise<VaultFile> {
+    if (!options.expectedSha) throw new Error("expectedSha is required.");
+    const source = await this.readFile(sourcePath);
+    if (source.sha !== options.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
+    const safeDestination = normalizeVaultPath(destinationPath);
+    if (await this.exists(safeDestination)) throw new Error("Refusing to overwrite existing note.");
+    const from = this.fullPath(source.path);
+    const to = this.fullPath(safeDestination);
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    await fs.rename(from, to);
+    return this.readFile(safeDestination);
+  }
 }
 
 export class GitHubVaultBackend implements VaultBackend {
@@ -80,6 +98,8 @@ export class GitHubVaultBackend implements VaultBackend {
     if (!this.config.githubOwner || !this.config.githubRepo) throw new Error("GITHUB_OWNER and GITHUB_REPO are required.");
     return `https://api.github.com/repos/${this.config.githubOwner}/${this.config.githubRepo}${pathname}`;
   }
+
+  private repoPath(filePath: string) { return joinVaultRoot(this.config.vaultRoot, filePath); }
 
   async listMarkdownFiles(): Promise<VaultFile[]> {
     const treeUrl = this.api(`/git/trees/${encodeURIComponent(this.config.githubBranch)}?recursive=1`);
@@ -98,7 +118,7 @@ export class GitHubVaultBackend implements VaultBackend {
 
   async readFile(filePath: string): Promise<VaultFile> {
     const safe = normalizeVaultPath(filePath);
-    const repoPath = joinVaultRoot(this.config.vaultRoot, safe);
+    const repoPath = this.repoPath(safe);
     const res = await fetch(this.api(`/contents/${encodeURIComponent(repoPath).replaceAll("%2F", "/")}?ref=${encodeURIComponent(this.config.githubBranch)}`), { headers: this.headers(), cache: "no-store" });
     if (!res.ok) throw new Error(`GitHub read failed for ${safe}: ${res.status}`);
     const json = await res.json() as { content: string; encoding: string; sha: string };
@@ -110,7 +130,7 @@ export class GitHubVaultBackend implements VaultBackend {
 
   async writeFile(filePath: string, content: string, options: WriteOptions = {}): Promise<VaultFile> {
     const safe = normalizeVaultPath(filePath);
-    const repoPath = joinVaultRoot(this.config.vaultRoot, safe);
+    const repoPath = this.repoPath(safe);
     const body: Record<string, string> = { message: options.message ?? `Update ${safe}`, content: Buffer.from(content, "utf8").toString("base64"), branch: this.config.githubBranch };
     if (options.expectedSha) body.sha = options.expectedSha;
     const res = await fetch(this.api(`/contents/${encodeURIComponent(repoPath).replaceAll("%2F", "/")}`), { method: "PUT", headers: { ...this.headers(), "Content-Type": "application/json" }, body: JSON.stringify(body), cache: "no-store" });
@@ -118,7 +138,33 @@ export class GitHubVaultBackend implements VaultBackend {
     if (!res.ok) throw new Error(`GitHub write failed for ${safe}: ${res.status}`);
     return this.readFile(safe);
   }
+
+  async moveFile(sourcePath: string, destinationPath: string, options: MoveOptions): Promise<VaultFile> {
+    if (!options.expectedSha) throw new Error("expectedSha is required.");
+    const source = await this.readFile(sourcePath);
+    if (source.sha !== options.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
+    const destination = normalizeVaultPath(destinationPath);
+    if (await this.exists(destination)) throw new Error("Refusing to overwrite existing note.");
+    const refRes = await fetch(this.api(`/git/ref/heads/${encodeURIComponent(this.config.githubBranch)}`), { headers: this.headers(), cache: "no-store" });
+    if (!refRes.ok) throw new Error(`GitHub ref request failed: ${refRes.status}`);
+    const ref = await refRes.json() as { object: { sha: string } };
+    const commitRes = await fetch(this.api(`/git/commits/${ref.object.sha}`), { headers: this.headers(), cache: "no-store" });
+    if (!commitRes.ok) throw new Error(`GitHub commit request failed: ${commitRes.status}`);
+    const commit = await commitRes.json() as { tree: { sha: string } };
+    const treeRes = await fetch(this.api("/git/trees"), { method: "POST", headers: { ...this.headers(), "Content-Type": "application/json" }, body: JSON.stringify({ base_tree: commit.tree.sha, tree: [{ path: this.repoPath(destination), mode: "100644", type: "blob", sha: source.sha }, { path: this.repoPath(source.path), mode: "100644", type: "blob", sha: null }] }), cache: "no-store" });
+    if (!treeRes.ok) throw new Error(`GitHub move tree request failed: ${treeRes.status}`);
+    const tree = await treeRes.json() as { sha: string };
+    const newCommitRes = await fetch(this.api("/git/commits"), { method: "POST", headers: { ...this.headers(), "Content-Type": "application/json" }, body: JSON.stringify({ message: options.message ?? `Move note ${source.path} to ${destination}`, tree: tree.sha, parents: [ref.object.sha] }), cache: "no-store" });
+    if (!newCommitRes.ok) throw new Error(`GitHub move commit request failed: ${newCommitRes.status}`);
+    const newCommit = await newCommitRes.json() as { sha: string };
+    const updateRefRes = await fetch(this.api(`/git/refs/heads/${encodeURIComponent(this.config.githubBranch)}`), { method: "PATCH", headers: { ...this.headers(), "Content-Type": "application/json" }, body: JSON.stringify({ sha: newCommit.sha, force: false }), cache: "no-store" });
+    if (updateRefRes.status === 409) throw new Error("Conflict: GitHub branch changed during move.");
+    if (!updateRefRes.ok) throw new Error(`GitHub move ref update failed: ${updateRefRes.status}`);
+    return this.readFile(destination);
+  }
 }
+
+function contentSha(content: string) { return crypto.createHash("sha256").update(content).digest("hex"); }
 
 export function createVaultBackend(config = getConfig()): VaultBackend {
   return config.backend === "github" ? new GitHubVaultBackend(config) : new LocalVaultBackend(config.localVaultDir, config.maxFileSizeBytes);

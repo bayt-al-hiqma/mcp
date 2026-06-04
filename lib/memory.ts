@@ -1,6 +1,7 @@
 import { AppConfig, getConfig } from "./config";
+import matter from "gray-matter";
 import { buildMarkdown, excerpt, frontmatterDate, parseMarkdown, replaceSection } from "./markdown";
-import { normalizeVaultPath, slugifyTitle } from "./pathSafety";
+import { normalizeVaultFolderPath, normalizeVaultPath, slugifyTitle } from "./pathSafety";
 import { createVaultBackend, VaultBackend, VaultFile } from "./vault";
 
 export type NoteSummary = { path: string; title: string; aliases: string[]; tags: string[]; type?: string; score?: number; excerpt?: string; sha?: string; updatedAt?: string };
@@ -74,6 +75,56 @@ export class MemoryService {
       return mentionTerms.some((term) => body.includes(term));
     }).map((other) => other.path).slice(0, this.config.graphResultLimit);
     return { ...this.summarize(file, parsed), frontmatter: parsed.frontmatter, body: parsed.body, headings: parsed.headings, outgoingLinks: parsed.links, backlinks: graph.backlinks[file.path] ?? [], unlinkedMentions, tasks: parsed.tasks, related: graph.neighborhood[file.path] ?? [] };
+  }
+
+
+  async readRaw(path: string) {
+    const file = await this.backend.readFile(path);
+    const split = splitFrontmatter(file.content);
+    return { path: file.path, frontmatter: matter(file.content).data, body: split.body, sha: file.sha, updatedAt: file.updatedAt };
+  }
+
+  async replaceBody(args: { path: string; body: string; expectedSha: string }) {
+    requireExpectedSha(args.expectedSha);
+    const current = await this.backend.readFile(args.path);
+    if (current.sha !== args.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
+    const split = splitFrontmatter(current.content);
+    const next = await this.backend.writeFile(current.path, `${split.frontmatter}${args.body}`, { expectedSha: args.expectedSha, message: `Replace body in ${current.path}` });
+    return { path: next.path, oldSha: current.sha, newSha: next.sha, summary: `Replaced Markdown body in ${next.path}; frontmatter preserved.` };
+  }
+
+  async moveNote(args: { sourcePath: string; destinationPath: string; expectedSha: string }) {
+    requireExpectedSha(args.expectedSha);
+    const source = await this.backend.readFile(args.sourcePath);
+    if (source.sha !== args.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
+    const destinationPath = normalizeVaultPath(args.destinationPath);
+    if (await this.backend.exists(destinationPath)) throw new Error("Refusing to overwrite existing note.");
+    const moved = await this.backend.moveFile(source.path, destinationPath, { expectedSha: args.expectedSha, message: `Move note ${source.path} to ${destinationPath}` });
+    return { sourcePath: source.path, destinationPath: moved.path, oldSha: source.sha, newSha: moved.sha, summary: `Moved ${source.path} to ${moved.path}. Links were not rewritten.` };
+  }
+
+  async trashNote(args: { path: string; expectedSha: string }) {
+    requireExpectedSha(args.expectedSha);
+    const current = await this.backend.readFile(args.path);
+    if (current.sha !== args.expectedSha) throw new Error("Conflict: file changed since expectedSha.");
+    const trashPath = normalizeVaultPath(`Archive/Trash/${current.path}`);
+    if (await this.backend.exists(trashPath)) throw new Error(`Refusing to overwrite existing trash note: ${trashPath}`);
+    const moved = await this.backend.moveFile(current.path, trashPath, { expectedSha: args.expectedSha, message: `Trash note ${current.path}` });
+    return { path: current.path, trashPath: moved.path, oldSha: current.sha, newSha: moved.sha, summary: `Moved ${current.path} to trash at ${moved.path}.` };
+  }
+
+  async tree(path = "", depth = 3) {
+    const root = normalizeVaultFolderPath(path);
+    const maxDepth = Math.max(0, Math.min(Number(depth) || 3, 10));
+    const files = (await this.backend.listMarkdownFiles()).map((f) => f.path).filter((filePath) => !root || filePath === root || filePath.startsWith(`${root}/`));
+    const tree = buildTree(files.map((filePath) => root && filePath.startsWith(`${root}/`) ? filePath.slice(root.length + 1) : filePath), maxDepth);
+    return { path: root || "/", depth: maxDepth, tree };
+  }
+
+  async diff(args: { path: string; proposedBody: string }) {
+    const current = await this.backend.readFile(args.path);
+    const split = splitFrontmatter(current.content);
+    return { path: current.path, sha: current.sha, diff: unifiedDiff(current.path, split.body, args.proposedBody ?? "") };
   }
 
   async createNote(args: { path: string; title: string; body: string; type?: string; tags?: string[]; aliases?: string[]; links?: string[] }) {
@@ -156,6 +207,49 @@ export class MemoryService {
   }
 }
 
+
+function requireExpectedSha(expectedSha?: string) { if (!expectedSha) throw new Error("expectedSha is required."); }
+function splitFrontmatter(raw: string) {
+  const match = /^---(?:\r?\n)([\s\S]*?)(?:\r?\n)---[^\S\r\n]*(?:\r?\n|$)/.exec(raw);
+  if (!match) return { frontmatter: "", body: raw };
+  return { frontmatter: match[0], body: raw.slice(match[0].length) };
+}
+function buildTree(files: string[], depth: number) {
+  const root: Record<string, any> = {};
+  for (const file of files.sort()) {
+    const parts = file.split("/").filter(Boolean);
+    let node = root;
+    for (let index = 0; index < parts.length && index <= depth; index += 1) {
+      const part = index === depth && index < parts.length - 1 ? "..." : parts[index];
+      node[part] ??= {};
+      node = node[part];
+      if (part === "...") break;
+    }
+  }
+  return renderTree(root);
+}
+function renderTree(node: Record<string, any>, prefix = ""): string[] {
+  return Object.keys(node).flatMap((name, index, names) => {
+    const last = index === names.length - 1;
+    const branch = `${prefix}${last ? "└──" : "├──"} ${name}`;
+    const childPrefix = `${prefix}${last ? "    " : "│   "}`;
+    return [branch, ...renderTree(node[name], childPrefix)];
+  });
+}
+function unifiedDiff(filePath: string, oldText: string, newText: string) {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const rows = [`--- a/${filePath}`, `+++ b/${filePath}`, `@@ -1,${oldLines.length} +1,${newLines.length} @@`];
+  const max = Math.max(oldLines.length, newLines.length);
+  for (let i = 0; i < max; i += 1) {
+    if (oldLines[i] === newLines[i]) rows.push(` ${oldLines[i] ?? ""}`);
+    else {
+      if (i < oldLines.length) rows.push(`-${oldLines[i]}`);
+      if (i < newLines.length) rows.push(`+${newLines[i]}`);
+    }
+  }
+  return rows.join("\n");
+}
 function filenameTitle(filePath: string) { return filePath.split("/").pop()?.replace(/\.md$/, "") ?? filePath; }
 function normalizeLinkTarget(target: string) { return target.replace(/\.md$/, "").split("#")[0].toLowerCase().trim(); }
 function withLinks(body: string, links?: string[]) { return `${body.trim()}${links?.length ? `\n\nRelated: ${links.map((l) => `[[${l}]]`).join(", ")}` : ""}\n`; }
