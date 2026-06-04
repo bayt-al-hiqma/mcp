@@ -40,6 +40,7 @@ Deploy to Vercel with server-side environment variables. For the simplest single
 | `OAUTH_CLIENT_ID` | Optional allowlist for one OAuth client ID. Leave unset unless you need to pin a client. |
 | `OAUTH_CODE_TTL_SECONDS` | Optional authorization-code lifetime; defaults to 300. |
 | `OAUTH_TOKEN_TTL_SECONDS` | Optional access-token lifetime; defaults to 3600. |
+| `OAUTH_REFRESH_TOKEN_TTL_SECONDS` | Optional refresh-token lifetime; defaults to 2592000 (30 days). |
 | `DIAGNOSTICS_TOKEN` | Optional bearer token for `/api/diagnostics`. |
 | `VAULT_BACKEND` | Use `github` on Vercel. |
 | `GITHUB_TOKEN` | Token that can read/write the Markdown vault repository. |
@@ -67,7 +68,7 @@ In ChatGPT, add the MCP server URL `https://your-app.vercel.app/api/mcp` and cho
 - `POST /oauth/register`: Dynamic client registration endpoint (RFC 7591); enabled when `OAUTH_CLIENT_ID` is not set.
 - `GET /oauth/authorize`: owner-password authorization page.
 - `POST /oauth/authorize`: validates `OAUTH_OWNER_PASSWORD` and issues an authorization code.
-- `POST /oauth/token`: exchanges an authorization code plus PKCE verifier for an access token.
+- `POST /oauth/token`: exchanges an authorization code plus PKCE verifier for access and refresh tokens; also refreshes access tokens with `grant_type=refresh_token`.
 - `GET /api/health`: public configuration health check without secrets.
 - `GET /api/diagnostics`: redacted diagnostics; send `Authorization: Bearer <DIAGNOSTICS_TOKEN>` only if `DIAGNOSTICS_TOKEN` is set.
 - `/`: setup page describing configuration and ChatGPT connection.
@@ -93,6 +94,7 @@ When `OAUTH_CLIENT_ID` is set, only that specific client is allowed and dynamic 
      -H "Content-Type: application/json" \
      -d '{
        "redirect_uris": ["https://your-client.example/callback"],
+       "grant_types": ["authorization_code", "refresh_token"],
        "client_name": "My MCP Client",
        "scope": "memory:read memory:write"
      }'
@@ -105,7 +107,7 @@ When `OAUTH_CLIENT_ID` is set, only that specific client is allowed and dynamic 
      "redirect_uris": ["https://your-client.example/callback"],
      "client_name": "My MCP Client",
      "token_endpoint_auth_method": "none",
-     "grant_types": ["authorization_code"],
+     "grant_types": ["authorization_code", "refresh_token"],
      "response_types": ["code"],
      "scope": "memory:read memory:write"
    }
@@ -130,7 +132,7 @@ When `OAUTH_CLIENT_ID` is set, only that specific client is allowed and dynamic 
 ### Security notes
 
 - Only public clients are supported (`token_endpoint_auth_method=none`)
-- Only `authorization_code` grant type is supported
+- `authorization_code` and `refresh_token` grant types are supported
 - PKCE (S256) is required for all authorization requests
 - Redirect URIs must use HTTPS except for localhost development
 - Dynamically registered clients are validated against their registered redirect URIs

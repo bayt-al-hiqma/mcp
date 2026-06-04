@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
       registration_endpoint: new URL("/oauth/register", config.baseUrl).toString(),
     }),
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     client_id_metadata_document_supported: true,
     token_endpoint_auth_methods_supported: ["none"],
     code_challenge_methods_supported: ["S256"],

@@ -2,8 +2,10 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 
 export const OAUTH_SCOPES = ["memory:read", "memory:write"] as const
 export const OAUTH_SCOPE = OAUTH_SCOPES.join(" ")
+export const OAUTH_GRANT_TYPES = ["authorization_code", "refresh_token"] as const
 
 export type OAuthScope = (typeof OAUTH_SCOPES)[number]
+export type OAuthGrantType = (typeof OAUTH_GRANT_TYPES)[number]
 
 // ============================================================================
 // Dynamic Client Registration (RFC 7591)
@@ -12,7 +14,7 @@ export type OAuthScope = (typeof OAUTH_SCOPES)[number]
 export type OAuthClientMetadata = {
   redirect_uris: string[]
   token_endpoint_auth_method?: "none"
-  grant_types?: string[]
+  grant_types?: OAuthGrantType[]
   response_types?: string[]
   client_name?: string
   client_uri?: string
@@ -32,7 +34,7 @@ export type RegisteredClient = {
   client_secret_expires_at?: number
   redirect_uris: string[]
   token_endpoint_auth_method: "none"
-  grant_types: string[]
+  grant_types: OAuthGrantType[]
   response_types: string[]
   client_name?: string
   client_uri?: string
@@ -104,14 +106,20 @@ export function validateClientMetadata(metadata: unknown): { ok: true; metadata:
   }
 
   // Validate grant_types if provided
+  let grantTypes: OAuthGrantType[] | undefined
   if (meta.grant_types !== undefined) {
     if (!Array.isArray(meta.grant_types)) {
       return { ok: false, error: { error: "invalid_client_metadata", error_description: "grant_types must be an array." } }
     }
+    grantTypes = []
     for (const gt of meta.grant_types) {
-      if (gt !== "authorization_code") {
-        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Only authorization_code is supported.` } }
+      if (typeof gt !== "string" || !isOAuthGrantType(gt)) {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Supported grant types are authorization_code and refresh_token.` } }
       }
+      if (!grantTypes.includes(gt)) grantTypes.push(gt)
+    }
+    if (grantTypes.length === 0) {
+      return { ok: false, error: { error: "invalid_client_metadata", error_description: "grant_types must not be empty when provided." } }
     }
   }
 
@@ -172,7 +180,7 @@ export function validateClientMetadata(metadata: unknown): { ok: true; metadata:
     metadata: {
       redirect_uris: meta.redirect_uris as string[],
       token_endpoint_auth_method: "none",
-      grant_types: (meta.grant_types as string[] | undefined) ?? ["authorization_code"],
+      grant_types: grantTypes ?? ["authorization_code"],
       response_types: (meta.response_types as string[] | undefined) ?? ["code"],
       client_name: meta.client_name as string | undefined,
       client_uri: meta.client_uri as string | undefined,
@@ -190,6 +198,10 @@ export function validateClientMetadata(metadata: unknown): { ok: true; metadata:
 function isLocalhostUri(url: URL): boolean {
   const host = url.hostname.toLowerCase()
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1"
+}
+
+function isOAuthGrantType(value: string): value is OAuthGrantType {
+  return (OAUTH_GRANT_TYPES as readonly string[]).includes(value)
 }
 
 export function registerClient(metadata: OAuthClientMetadata, config = getOAuthConfig()): RegisteredClient {
@@ -240,6 +252,19 @@ export function isClientAllowed(clientId: string, redirectUri: string, config = 
   return true
 }
 
+export function clientSupportsGrant(clientId: string, grantType: OAuthGrantType, config = getOAuthConfig()): boolean {
+  if (config.allowedClientId && clientId === config.allowedClientId) {
+    return true
+  }
+
+  const dynamicClient = getRegisteredClient(clientId)
+  if (dynamicClient) {
+    return dynamicClient.grant_types.includes(grantType)
+  }
+
+  return !config.allowedClientId
+}
+
 export function isDynamicClientRegistrationEnabled(config = getOAuthConfig()): boolean {
   // Dynamic client registration is enabled when OAuth is enabled
   // and no specific client_id is pinned via OAUTH_CLIENT_ID
@@ -264,6 +289,7 @@ export type OAuthConfig = {
   allowedClientId?: string
   codeTtlSeconds: number
   accessTokenTtlSeconds: number
+  refreshTokenTtlSeconds: number
   scopes: readonly OAuthScope[]
 }
 
@@ -314,6 +340,18 @@ export type AccessTokenClaims = {
   jti: string
 }
 
+export type RefreshTokenClaims = {
+  kind: "refresh_token"
+  iss: string
+  aud: string
+  sub: string
+  clientId: string
+  scope: string
+  iat: number
+  exp: number
+  jti: string
+}
+
 export type IssueAuthorizationCodeInput = {
   clientId: string
   redirectUri: string
@@ -340,8 +378,22 @@ export type IssueAccessTokenInput = {
   now?: Date | number
 }
 
+export type IssueRefreshTokenInput = {
+  clientId: string
+  scope?: string | readonly string[]
+  subject?: string
+  ttlSeconds?: number
+  now?: Date | number
+}
+
 export type VerifyAccessTokenOptions = {
   requiredScopes?: string | readonly string[]
+  clientId?: string
+  now?: Date | number
+  config?: OAuthConfig
+}
+
+export type VerifyRefreshTokenOptions = {
   clientId?: string
   now?: Date | number
   config?: OAuthConfig
@@ -362,6 +414,7 @@ type SignedEnvelopeHeader = {
 
 const DEFAULT_CODE_TTL_SECONDS = 300
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 const PKCE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/
 const PKCE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43,128}$/
 
@@ -387,6 +440,7 @@ export function getOAuthConfig(options: OAuthConfigOptions = {}): OAuthConfig {
     allowedClientId: emptyToUndefined(env.OAUTH_CLIENT_ID),
     codeTtlSeconds: positiveIntegerEnv(env.OAUTH_CODE_TTL_SECONDS, DEFAULT_CODE_TTL_SECONDS),
     accessTokenTtlSeconds: positiveIntegerEnv(env.OAUTH_TOKEN_TTL_SECONDS ?? env.OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS),
+    refreshTokenTtlSeconds: positiveIntegerEnv(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS),
     scopes: OAUTH_SCOPES,
   }
 }
@@ -483,6 +537,29 @@ export function issueAccessToken(input: IssueAccessTokenInput, config = getOAuth
   return signPayload(payload, config.secret)
 }
 
+export function issueRefreshToken(input: IssueRefreshTokenInput, config = getOAuthConfig()): string {
+  assertUsableConfig(config)
+  assertClientAllowed(input.clientId, config)
+  if (!clientSupportsGrant(input.clientId, "refresh_token", config)) {
+    throw new Error("client is not allowed to use refresh_token grant")
+  }
+
+  const iat = epochSeconds(input.now)
+  const payload: RefreshTokenClaims = {
+    kind: "refresh_token",
+    iss: config.issuer,
+    aud: config.resource,
+    sub: input.subject ?? config.subject,
+    clientId: input.clientId,
+    scope: grantScope(input.scope),
+    iat,
+    exp: iat + (input.ttlSeconds ?? config.refreshTokenTtlSeconds),
+    jti: randomTokenId(),
+  }
+
+  return signPayload(payload, config.secret)
+}
+
 export function verifyAccessToken(token: string, options: VerifyAccessTokenOptions = {}): AccessTokenClaims | null {
   const config = options.config ?? getOAuthConfig()
   if (!config.secret) return null
@@ -492,6 +569,19 @@ export function verifyAccessToken(token: string, options: VerifyAccessTokenOptio
   if (options.clientId && payload.clientId !== options.clientId) return null
   if (config.allowedClientId && payload.clientId !== config.allowedClientId) return null
   if (!hasRequiredScopes(payload.scope, options.requiredScopes)) return null
+
+  return payload
+}
+
+export function verifyRefreshToken(token: string, options: VerifyRefreshTokenOptions = {}): RefreshTokenClaims | null {
+  const config = options.config ?? getOAuthConfig()
+  if (!config.secret) return null
+
+  const payload = verifyPayload<RefreshTokenClaims>(token, "refresh_token", config, options.now)
+  if (!payload) return null
+  if (options.clientId && payload.clientId !== options.clientId) return null
+  if (config.allowedClientId && payload.clientId !== config.allowedClientId) return null
+  if (!clientSupportsGrant(payload.clientId, "refresh_token", config)) return null
 
   return payload
 }

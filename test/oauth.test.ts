@@ -5,6 +5,7 @@ import { GET as authorizationServerMetadataGET } from "../app/.well-known/oauth-
 import { GET as protectedResourceMetadataGET } from "../app/.well-known/oauth-protected-resource/route";
 import { POST as mcpPOST } from "../app/api/mcp/route";
 import { POST as registerPOST } from "../app/oauth/register/route";
+import { POST as tokenPOST } from "../app/oauth/token/route";
 import {
   clearDynamicClients,
   getOAuthConfig,
@@ -12,11 +13,13 @@ import {
   isClientAllowed,
   issueAccessToken,
   issueAuthorizationCode,
+  issueRefreshToken,
   OAUTH_SCOPE,
   registerClient,
   validateClientMetadata,
   verifyAccessToken,
   verifyAuthorizationCode,
+  verifyRefreshToken,
   verifyPkceS256,
 } from "../lib/oauth";
 
@@ -54,6 +57,14 @@ function mcpRequest(headers: HeadersInit = {}) {
   });
 }
 
+function tokenRequest(body: Record<string, string>) {
+  return new NextRequest(`${BASE_URL}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(body).toString(),
+  });
+}
+
 function stubOAuthEnv() {
   vi.stubEnv("MCP_OAUTH_ENABLED", "true");
   vi.stubEnv("OAUTH_OWNER_PASSWORD", "test-owner-password");
@@ -68,7 +79,7 @@ afterEach(() => {
 });
 
 describe("OAuth helpers", () => {
-  it("signs authorization codes and access tokens, then enforces PKCE, expiry, tampering, and scopes", () => {
+  it("signs authorization codes, access tokens, and refresh tokens, then enforces PKCE, expiry, tampering, and scopes", () => {
     const config = oauthConfig();
     const now = new Date("2026-05-30T12:00:00Z");
     const validAt = new Date("2026-05-30T12:00:30Z");
@@ -120,6 +131,25 @@ describe("OAuth helpers", () => {
     });
     expect(verifyAccessToken(accessToken, { clientId: CLIENT_ID, requiredScopes: "memory:write", now: validAt, config })).toBeNull();
     expect(verifyAccessToken(tamper(accessToken), { clientId: CLIENT_ID, requiredScopes: "memory:read", now: validAt, config })).toBeNull();
+
+    const refreshToken = issueRefreshToken(
+      {
+        clientId: CLIENT_ID,
+        scope: "memory:read",
+        now,
+        ttlSeconds: 120,
+      },
+      config,
+    );
+
+    expect(verifyRefreshToken(refreshToken, { clientId: CLIENT_ID, now: validAt, config })).toMatchObject({
+      kind: "refresh_token",
+      clientId: CLIENT_ID,
+      scope: "memory:read",
+    });
+    expect(verifyRefreshToken(refreshToken, { clientId: "wrong-client", now: validAt, config })).toBeNull();
+    expect(verifyRefreshToken(refreshToken, { clientId: CLIENT_ID, now: expiredAt, config })).toBeNull();
+    expect(verifyRefreshToken(tamper(refreshToken), { clientId: CLIENT_ID, now: validAt, config })).toBeNull();
   });
 });
 
@@ -144,7 +174,7 @@ describe("OAuth metadata routes", () => {
       authorization_endpoint: `${BASE_URL}/oauth/authorize`,
       token_endpoint: `${BASE_URL}/oauth/token`,
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
       client_id_metadata_document_supported: true,
       code_challenge_methods_supported: ["S256"],
@@ -242,6 +272,14 @@ describe("Dynamic Client Registration (RFC 7591)", () => {
     });
 
     it("only allows supported grant_types and response_types", () => {
+      expect(validateClientMetadata({
+        redirect_uris: ["https://example.com/callback"],
+        grant_types: ["authorization_code", "refresh_token"],
+      })).toMatchObject({
+        ok: true,
+        metadata: { grant_types: ["authorization_code", "refresh_token"] },
+      });
+
       expect(validateClientMetadata({
         redirect_uris: ["https://example.com/callback"],
         grant_types: ["client_credentials"],
@@ -363,6 +401,7 @@ describe("Dynamic Client Registration (RFC 7591)", () => {
 
       const response = await registerPOST(registrationRequest({
         redirect_uris: ["https://example.com/callback"],
+        grant_types: ["authorization_code", "refresh_token"],
         client_name: "Codex Test Client",
         scope: "memory:read memory:write",
       }));
@@ -376,7 +415,7 @@ describe("Dynamic Client Registration (RFC 7591)", () => {
         client_name: "Codex Test Client",
         scope: "memory:read memory:write",
         token_endpoint_auth_method: "none",
-        grant_types: ["authorization_code"],
+        grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
       });
     });
@@ -445,6 +484,7 @@ describe("Dynamic Client Registration (RFC 7591)", () => {
       // 1. Register a client
       const client = registerClient({
         redirect_uris: ["https://codex.example/callback"],
+        grant_types: ["authorization_code", "refresh_token"],
         client_name: "Codex CLI",
       }, config);
 
@@ -473,20 +513,69 @@ describe("Dynamic Client Registration (RFC 7591)", () => {
         scope: "memory:read",
       });
 
-      // 4. Issue an access token
-      const accessToken = issueAccessToken({
-        clientId: client.client_id,
-        scope: claims!.scope,
-      }, config);
+      // 4. Exchange the authorization code for access and refresh tokens
+      const tokenResponse = await tokenPOST(tokenRequest({
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        client_id: client.client_id,
+        redirect_uri: "https://codex.example/callback",
+      }));
+
+      expect(tokenResponse.status).toBe(200);
+      const tokenBody = await tokenResponse.json();
+      expect(tokenBody).toMatchObject({
+        access_token: expect.any(String),
+        refresh_token: expect.any(String),
+        token_type: "Bearer",
+        expires_in: config.accessTokenTtlSeconds,
+        scope: "memory:read",
+      });
 
       // 5. Verify the access token
-      const tokenClaims = verifyAccessToken(accessToken, {
+      const tokenClaims = verifyAccessToken(tokenBody.access_token, {
         clientId: client.client_id,
         requiredScopes: "memory:read",
         config,
       });
 
       expect(tokenClaims).toMatchObject({
+        kind: "access_token",
+        clientId: client.client_id,
+        scope: "memory:read",
+      });
+
+      expect(verifyRefreshToken(tokenBody.refresh_token, {
+        clientId: client.client_id,
+        config,
+      })).toMatchObject({
+        kind: "refresh_token",
+        clientId: client.client_id,
+        scope: "memory:read",
+      });
+
+      // 6. Refresh the access token without another authorization code
+      const refreshResponse = await tokenPOST(tokenRequest({
+        grant_type: "refresh_token",
+        refresh_token: tokenBody.refresh_token,
+        client_id: client.client_id,
+      }));
+
+      expect(refreshResponse.status).toBe(200);
+      const refreshBody = await refreshResponse.json();
+      expect(refreshBody).toMatchObject({
+        access_token: expect.any(String),
+        refresh_token: expect.any(String),
+        token_type: "Bearer",
+        expires_in: config.accessTokenTtlSeconds,
+        scope: "memory:read",
+      });
+
+      expect(verifyAccessToken(refreshBody.access_token, {
+        clientId: client.client_id,
+        requiredScopes: "memory:read",
+        config,
+      })).toMatchObject({
         kind: "access_token",
         clientId: client.client_id,
         scope: "memory:read",
