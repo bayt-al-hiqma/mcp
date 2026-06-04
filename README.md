@@ -63,13 +63,77 @@ In ChatGPT, add the MCP server URL `https://your-app.vercel.app/api/mcp` and cho
 - `POST /api/mcp`: MCP JSON-RPC over HTTPS; requires `Authorization: Bearer <access_token>` when OAuth is enabled.
 - `GET /api/mcp`: public MCP endpoint metadata, including OAuth resource metadata when enabled.
 - `GET /.well-known/oauth-protected-resource`: OAuth protected-resource metadata for ChatGPT discovery.
-- `GET /.well-known/oauth-authorization-server`: OAuth authorization-server metadata.
+- `GET /.well-known/oauth-authorization-server`: OAuth authorization-server metadata; includes `registration_endpoint` when dynamic client registration is enabled.
+- `POST /oauth/register`: Dynamic client registration endpoint (RFC 7591); enabled when `OAUTH_CLIENT_ID` is not set.
 - `GET /oauth/authorize`: owner-password authorization page.
 - `POST /oauth/authorize`: validates `OAUTH_OWNER_PASSWORD` and issues an authorization code.
 - `POST /oauth/token`: exchanges an authorization code plus PKCE verifier for an access token.
 - `GET /api/health`: public configuration health check without secrets.
 - `GET /api/diagnostics`: redacted diagnostics; send `Authorization: Bearer <DIAGNOSTICS_TOKEN>` only if `DIAGNOSTICS_TOKEN` is set.
 - `/`: setup page describing configuration and ChatGPT connection.
+
+## Dynamic Client Registration (RFC 7591)
+
+The server supports OAuth Dynamic Client Registration per RFC 7591, enabling clients like GitHub Copilot, Codex CLI, and other MCP-compatible tools to register themselves automatically without pre-configuration.
+
+### When is dynamic registration enabled?
+
+Dynamic client registration is enabled when:
+1. OAuth is enabled (`OAUTH_TOKEN_SECRET` and `OAUTH_OWNER_PASSWORD` are set)
+2. No static client is pinned via `OAUTH_CLIENT_ID`
+
+When `OAUTH_CLIENT_ID` is set, only that specific client is allowed and dynamic registration is disabled.
+
+### Registration flow
+
+1. Client discovers the registration endpoint from `/.well-known/oauth-authorization-server` (the `registration_endpoint` field)
+2. Client POSTs its metadata to `/oauth/register`:
+   ```bash
+   curl -X POST https://your-app.vercel.app/oauth/register \
+     -H "Content-Type: application/json" \
+     -d '{
+       "redirect_uris": ["https://your-client.example/callback"],
+       "client_name": "My MCP Client",
+       "scope": "memory:read memory:write"
+     }'
+   ```
+3. Server responds with client credentials:
+   ```json
+   {
+     "client_id": "dyn_abc123...",
+     "client_id_issued_at": 1234567890,
+     "redirect_uris": ["https://your-client.example/callback"],
+     "client_name": "My MCP Client",
+     "token_endpoint_auth_method": "none",
+     "grant_types": ["authorization_code"],
+     "response_types": ["code"],
+     "scope": "memory:read memory:write"
+   }
+   ```
+4. Client uses the `client_id` for the standard OAuth authorization code flow with PKCE
+
+### Supported client metadata
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `redirect_uris` | Yes | Array of allowed redirect URIs. HTTPS required except for localhost. |
+| `client_name` | No | Human-readable client name. |
+| `client_uri` | No | URL of the client homepage. |
+| `logo_uri` | No | URL of the client logo. |
+| `scope` | No | Requested scopes; defaults to `memory:read memory:write`. |
+| `contacts` | No | Array of contact emails. |
+| `tos_uri` | No | URL of terms of service. |
+| `policy_uri` | No | URL of privacy policy. |
+| `software_id` | No | Unique identifier for the client software. |
+| `software_version` | No | Version of the client software. |
+
+### Security notes
+
+- Only public clients are supported (`token_endpoint_auth_method=none`)
+- Only `authorization_code` grant type is supported
+- PKCE (S256) is required for all authorization requests
+- Redirect URIs must use HTTPS except for localhost development
+- Dynamically registered clients are validated against their registered redirect URIs
 
 ## Verification
 

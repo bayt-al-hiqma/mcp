@@ -5,6 +5,252 @@ export const OAUTH_SCOPE = OAUTH_SCOPES.join(" ")
 
 export type OAuthScope = (typeof OAUTH_SCOPES)[number]
 
+// ============================================================================
+// Dynamic Client Registration (RFC 7591)
+// ============================================================================
+
+export type OAuthClientMetadata = {
+  redirect_uris: string[]
+  token_endpoint_auth_method?: "none"
+  grant_types?: string[]
+  response_types?: string[]
+  client_name?: string
+  client_uri?: string
+  logo_uri?: string
+  scope?: string
+  contacts?: string[]
+  tos_uri?: string
+  policy_uri?: string
+  software_id?: string
+  software_version?: string
+}
+
+export type RegisteredClient = {
+  client_id: string
+  client_secret?: string
+  client_id_issued_at: number
+  client_secret_expires_at?: number
+  redirect_uris: string[]
+  token_endpoint_auth_method: "none"
+  grant_types: string[]
+  response_types: string[]
+  client_name?: string
+  client_uri?: string
+  logo_uri?: string
+  scope: string
+  contacts?: string[]
+  tos_uri?: string
+  policy_uri?: string
+  software_id?: string
+  software_version?: string
+}
+
+export type ClientRegistrationResponse = RegisteredClient & {
+  registration_access_token?: string
+  registration_client_uri?: string
+}
+
+export type ClientRegistrationError = {
+  error: "invalid_redirect_uri" | "invalid_client_metadata" | "invalid_software_statement" | "unapproved_software_statement"
+  error_description?: string
+}
+
+// In-memory client store for dynamically registered clients
+// In production, this should be persisted to a database or file system
+const dynamicClients = new Map<string, RegisteredClient>()
+
+export function generateClientId(): string {
+  return `dyn_${randomBytes(16).toString("hex")}`
+}
+
+export function generateClientSecret(): string {
+  return randomBytes(32).toString("base64url")
+}
+
+export function validateClientMetadata(metadata: unknown): { ok: true; metadata: OAuthClientMetadata } | { ok: false; error: ClientRegistrationError } {
+  if (!metadata || typeof metadata !== "object") {
+    return { ok: false, error: { error: "invalid_client_metadata", error_description: "Request body must be a JSON object." } }
+  }
+
+  const meta = metadata as Record<string, unknown>
+
+  // redirect_uris is REQUIRED per RFC 7591
+  if (!Array.isArray(meta.redirect_uris) || meta.redirect_uris.length === 0) {
+    return { ok: false, error: { error: "invalid_client_metadata", error_description: "redirect_uris is required and must be a non-empty array." } }
+  }
+
+  // Validate each redirect_uri
+  for (const uri of meta.redirect_uris) {
+    if (typeof uri !== "string") {
+      return { ok: false, error: { error: "invalid_redirect_uri", error_description: "Each redirect_uri must be a string." } }
+    }
+    try {
+      const parsed = new URL(uri)
+      // Allow http for localhost, require https otherwise
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return { ok: false, error: { error: "invalid_redirect_uri", error_description: `redirect_uri must use http or https: ${uri}` } }
+      }
+      if (parsed.protocol === "http:" && !isLocalhostUri(parsed)) {
+        return { ok: false, error: { error: "invalid_redirect_uri", error_description: `Non-localhost redirect_uri must use https: ${uri}` } }
+      }
+    } catch {
+      return { ok: false, error: { error: "invalid_redirect_uri", error_description: `Invalid redirect_uri: ${uri}` } }
+    }
+  }
+
+  // Validate token_endpoint_auth_method - we only support "none" (public clients)
+  if (meta.token_endpoint_auth_method !== undefined && meta.token_endpoint_auth_method !== "none") {
+    return { ok: false, error: { error: "invalid_client_metadata", error_description: "Only token_endpoint_auth_method=none is supported (public clients)." } }
+  }
+
+  // Validate grant_types if provided
+  if (meta.grant_types !== undefined) {
+    if (!Array.isArray(meta.grant_types)) {
+      return { ok: false, error: { error: "invalid_client_metadata", error_description: "grant_types must be an array." } }
+    }
+    for (const gt of meta.grant_types) {
+      if (gt !== "authorization_code") {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported grant_type: ${gt}. Only authorization_code is supported.` } }
+      }
+    }
+  }
+
+  // Validate response_types if provided
+  if (meta.response_types !== undefined) {
+    if (!Array.isArray(meta.response_types)) {
+      return { ok: false, error: { error: "invalid_client_metadata", error_description: "response_types must be an array." } }
+    }
+    for (const rt of meta.response_types) {
+      if (rt !== "code") {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Unsupported response_type: ${rt}. Only code is supported.` } }
+      }
+    }
+  }
+
+  // Validate optional URI fields
+  const uriFields = ["client_uri", "logo_uri", "tos_uri", "policy_uri"] as const
+  for (const field of uriFields) {
+    if (meta[field] !== undefined) {
+      if (typeof meta[field] !== "string") {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `${field} must be a string.` } }
+      }
+      try {
+        new URL(meta[field] as string)
+      } catch {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: `Invalid ${field}: ${meta[field]}` } }
+      }
+    }
+  }
+
+  // Validate optional string fields
+  const stringFields = ["client_name", "software_id", "software_version"] as const
+  for (const field of stringFields) {
+    if (meta[field] !== undefined && typeof meta[field] !== "string") {
+      return { ok: false, error: { error: "invalid_client_metadata", error_description: `${field} must be a string.` } }
+    }
+  }
+
+  // Validate contacts if provided
+  if (meta.contacts !== undefined) {
+    if (!Array.isArray(meta.contacts)) {
+      return { ok: false, error: { error: "invalid_client_metadata", error_description: "contacts must be an array." } }
+    }
+    for (const contact of meta.contacts) {
+      if (typeof contact !== "string") {
+        return { ok: false, error: { error: "invalid_client_metadata", error_description: "Each contact must be a string." } }
+      }
+    }
+  }
+
+  // Validate scope if provided
+  if (meta.scope !== undefined && typeof meta.scope !== "string") {
+    return { ok: false, error: { error: "invalid_client_metadata", error_description: "scope must be a string." } }
+  }
+
+  return {
+    ok: true,
+    metadata: {
+      redirect_uris: meta.redirect_uris as string[],
+      token_endpoint_auth_method: "none",
+      grant_types: (meta.grant_types as string[] | undefined) ?? ["authorization_code"],
+      response_types: (meta.response_types as string[] | undefined) ?? ["code"],
+      client_name: meta.client_name as string | undefined,
+      client_uri: meta.client_uri as string | undefined,
+      logo_uri: meta.logo_uri as string | undefined,
+      scope: (meta.scope as string | undefined) ?? OAUTH_SCOPE,
+      contacts: meta.contacts as string[] | undefined,
+      tos_uri: meta.tos_uri as string | undefined,
+      policy_uri: meta.policy_uri as string | undefined,
+      software_id: meta.software_id as string | undefined,
+      software_version: meta.software_version as string | undefined,
+    },
+  }
+}
+
+function isLocalhostUri(url: URL): boolean {
+  const host = url.hostname.toLowerCase()
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1"
+}
+
+export function registerClient(metadata: OAuthClientMetadata, config = getOAuthConfig()): RegisteredClient {
+  const clientId = generateClientId()
+  const now = epochSeconds()
+
+  const client: RegisteredClient = {
+    client_id: clientId,
+    client_id_issued_at: now,
+    redirect_uris: metadata.redirect_uris,
+    token_endpoint_auth_method: "none",
+    grant_types: metadata.grant_types ?? ["authorization_code"],
+    response_types: metadata.response_types ?? ["code"],
+    client_name: metadata.client_name,
+    client_uri: metadata.client_uri,
+    logo_uri: metadata.logo_uri,
+    scope: metadata.scope ?? OAUTH_SCOPE,
+    contacts: metadata.contacts,
+    tos_uri: metadata.tos_uri,
+    policy_uri: metadata.policy_uri,
+    software_id: metadata.software_id,
+    software_version: metadata.software_version,
+  }
+
+  dynamicClients.set(clientId, client)
+  return client
+}
+
+export function getRegisteredClient(clientId: string): RegisteredClient | null {
+  return dynamicClients.get(clientId) ?? null
+}
+
+export function isClientAllowed(clientId: string, redirectUri: string, config = getOAuthConfig()): boolean {
+  // If OAUTH_CLIENT_ID is set, only that specific client is allowed (static client)
+  if (config.allowedClientId) {
+    return clientId === config.allowedClientId
+  }
+
+  // Check if this is a dynamically registered client
+  const dynamicClient = getRegisteredClient(clientId)
+  if (dynamicClient) {
+    // Validate the redirect_uri matches one of the registered URIs
+    return dynamicClient.redirect_uris.includes(redirectUri)
+  }
+
+  // If no static client is configured and client is not dynamically registered,
+  // allow any client (backwards compatible with the original behavior)
+  return true
+}
+
+export function isDynamicClientRegistrationEnabled(config = getOAuthConfig()): boolean {
+  // Dynamic client registration is enabled when OAuth is enabled
+  // and no specific client_id is pinned via OAUTH_CLIENT_ID
+  return config.enabled && !config.allowedClientId
+}
+
+// For testing purposes
+export function clearDynamicClients(): void {
+  dynamicClients.clear()
+}
+
 export type OAuthConfig = {
   enabled: boolean
   requested: boolean
@@ -333,7 +579,15 @@ function assertUsableConfig(config: OAuthConfig): asserts config is OAuthConfig 
 
 function assertClientAllowed(clientId: string, config: OAuthConfig): void {
   if (!clientId) throw new Error("clientId is required")
-  if (config.allowedClientId && clientId !== config.allowedClientId) throw new Error("clientId is not allowed")
+  // Note: For dynamic clients, we also validate redirect_uri in isClientAllowed()
+  // Here we only check if a static client is pinned and doesn't match
+  if (config.allowedClientId && clientId !== config.allowedClientId) {
+    // Check if this is a valid dynamically registered client
+    const dynamicClient = getRegisteredClient(clientId)
+    if (!dynamicClient) {
+      throw new Error("clientId is not allowed")
+    }
+  }
 }
 
 function base64UrlJson(value: unknown): string {

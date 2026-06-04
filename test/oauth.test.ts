@@ -4,11 +4,17 @@ import { NextRequest } from "next/server";
 import { GET as authorizationServerMetadataGET } from "../app/.well-known/oauth-authorization-server/route";
 import { GET as protectedResourceMetadataGET } from "../app/.well-known/oauth-protected-resource/route";
 import { POST as mcpPOST } from "../app/api/mcp/route";
+import { POST as registerPOST } from "../app/oauth/register/route";
 import {
+  clearDynamicClients,
   getOAuthConfig,
+  getRegisteredClient,
+  isClientAllowed,
   issueAccessToken,
   issueAuthorizationCode,
   OAUTH_SCOPE,
+  registerClient,
+  validateClientMetadata,
   verifyAccessToken,
   verifyAuthorizationCode,
   verifyPkceS256,
@@ -58,6 +64,7 @@ function stubOAuthEnv() {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  clearDynamicClients();
 });
 
 describe("OAuth helpers", () => {
@@ -178,6 +185,312 @@ describe("MCP OAuth enforcement", () => {
       jsonrpc: "2.0",
       id: "ping-1",
       result: {},
+    });
+  });
+});
+
+describe("Dynamic Client Registration (RFC 7591)", () => {
+  function stubOAuthEnvWithoutStaticClient() {
+    vi.stubEnv("MCP_OAUTH_ENABLED", "true");
+    vi.stubEnv("OAUTH_OWNER_PASSWORD", "test-owner-password");
+    vi.stubEnv("OAUTH_TOKEN_SECRET", SECRET);
+    vi.stubEnv("OAUTH_BASE_URL", BASE_URL);
+    // Note: No OAUTH_CLIENT_ID - enables dynamic registration
+  }
+
+  function registrationRequest(body: unknown) {
+    return new NextRequest(`${BASE_URL}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  describe("validateClientMetadata", () => {
+    it("validates required redirect_uris", () => {
+      expect(validateClientMetadata({})).toMatchObject({
+        ok: false,
+        error: { error: "invalid_client_metadata" },
+      });
+
+      expect(validateClientMetadata({ redirect_uris: [] })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_client_metadata" },
+      });
+
+      expect(validateClientMetadata({ redirect_uris: ["not-a-url"] })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_redirect_uri" },
+      });
+    });
+
+    it("requires https for non-localhost URIs", () => {
+      expect(validateClientMetadata({ redirect_uris: ["http://example.com/callback"] })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_redirect_uri" },
+      });
+
+      // localhost is allowed with http
+      expect(validateClientMetadata({ redirect_uris: ["http://localhost:3000/callback"] })).toMatchObject({
+        ok: true,
+      });
+
+      // https is always allowed
+      expect(validateClientMetadata({ redirect_uris: ["https://example.com/callback"] })).toMatchObject({
+        ok: true,
+      });
+    });
+
+    it("only allows supported grant_types and response_types", () => {
+      expect(validateClientMetadata({
+        redirect_uris: ["https://example.com/callback"],
+        grant_types: ["client_credentials"],
+      })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_client_metadata", error_description: expect.stringContaining("client_credentials") },
+      });
+
+      expect(validateClientMetadata({
+        redirect_uris: ["https://example.com/callback"],
+        response_types: ["token"],
+      })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_client_metadata", error_description: expect.stringContaining("token") },
+      });
+    });
+
+    it("only allows public clients (token_endpoint_auth_method=none)", () => {
+      expect(validateClientMetadata({
+        redirect_uris: ["https://example.com/callback"],
+        token_endpoint_auth_method: "client_secret_basic",
+      })).toMatchObject({
+        ok: false,
+        error: { error: "invalid_client_metadata" },
+      });
+    });
+
+    it("accepts valid client metadata", () => {
+      const result = validateClientMetadata({
+        redirect_uris: ["https://example.com/callback", "https://example.com/callback2"],
+        client_name: "Test Client",
+        client_uri: "https://example.com",
+        scope: "memory:read",
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        metadata: {
+          redirect_uris: ["https://example.com/callback", "https://example.com/callback2"],
+          client_name: "Test Client",
+          client_uri: "https://example.com",
+          scope: "memory:read",
+        },
+      });
+    });
+  });
+
+  describe("registerClient", () => {
+    it("creates a client with a unique client_id", () => {
+      stubOAuthEnvWithoutStaticClient();
+      const config = getOAuthConfig();
+
+      const client1 = registerClient({ redirect_uris: ["https://a.example/cb"] }, config);
+      const client2 = registerClient({ redirect_uris: ["https://b.example/cb"] }, config);
+
+      expect(client1.client_id).toMatch(/^dyn_[a-f0-9]{32}$/);
+      expect(client2.client_id).toMatch(/^dyn_[a-f0-9]{32}$/);
+      expect(client1.client_id).not.toBe(client2.client_id);
+    });
+
+    it("stores client for later retrieval", () => {
+      stubOAuthEnvWithoutStaticClient();
+      const config = getOAuthConfig();
+
+      const client = registerClient({
+        redirect_uris: ["https://example.com/callback"],
+        client_name: "My Test Client",
+      }, config);
+
+      const retrieved = getRegisteredClient(client.client_id);
+      expect(retrieved).toMatchObject({
+        client_id: client.client_id,
+        redirect_uris: ["https://example.com/callback"],
+        client_name: "My Test Client",
+      });
+    });
+  });
+
+  describe("isClientAllowed", () => {
+    it("allows dynamically registered clients with matching redirect_uri", () => {
+      stubOAuthEnvWithoutStaticClient();
+      const config = getOAuthConfig();
+
+      const client = registerClient({ redirect_uris: ["https://example.com/callback"] }, config);
+
+      expect(isClientAllowed(client.client_id, "https://example.com/callback", config)).toBe(true);
+      expect(isClientAllowed(client.client_id, "https://other.com/callback", config)).toBe(false);
+    });
+
+    it("respects static OAUTH_CLIENT_ID when set", () => {
+      stubOAuthEnv();
+      const config = getOAuthConfig();
+
+      // Static client is allowed (any redirect_uri because we don't track it for static clients)
+      expect(isClientAllowed(CLIENT_ID, REDIRECT_URI, config)).toBe(true);
+
+      // Other clients are not allowed when static client is configured
+      expect(isClientAllowed("other-client", "https://other.com/callback", config)).toBe(false);
+    });
+  });
+
+  describe("/oauth/register endpoint", () => {
+    it("returns 400 when dynamic registration is disabled (static client configured)", async () => {
+      stubOAuthEnv(); // This sets OAUTH_CLIENT_ID
+
+      const response = await registerPOST(registrationRequest({
+        redirect_uris: ["https://example.com/callback"],
+      }));
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "invalid_client_metadata",
+        error_description: expect.stringContaining("not enabled"),
+      });
+    });
+
+    it("registers a client successfully when dynamic registration is enabled", async () => {
+      stubOAuthEnvWithoutStaticClient();
+
+      const response = await registerPOST(registrationRequest({
+        redirect_uris: ["https://example.com/callback"],
+        client_name: "Codex Test Client",
+        scope: "memory:read memory:write",
+      }));
+
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        client_id: expect.stringMatching(/^dyn_[a-f0-9]{32}$/),
+        client_id_issued_at: expect.any(Number),
+        redirect_uris: ["https://example.com/callback"],
+        client_name: "Codex Test Client",
+        scope: "memory:read memory:write",
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+      });
+    });
+
+    it("rejects invalid client metadata", async () => {
+      stubOAuthEnvWithoutStaticClient();
+
+      const response = await registerPOST(registrationRequest({
+        redirect_uris: ["not-a-valid-url"],
+      }));
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "invalid_redirect_uri",
+      });
+    });
+
+    it("rejects non-JSON content type", async () => {
+      stubOAuthEnvWithoutStaticClient();
+
+      const response = await registerPOST(new NextRequest(`${BASE_URL}/oauth/register`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "not json",
+      }));
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "invalid_client_metadata",
+        error_description: expect.stringContaining("application/json"),
+      });
+    });
+  });
+
+  describe("authorization server metadata", () => {
+    it("includes registration_endpoint when dynamic registration is enabled", async () => {
+      stubOAuthEnvWithoutStaticClient();
+
+      const response = await authorizationServerMetadataGET(
+        new NextRequest(`${BASE_URL}/.well-known/oauth-authorization-server`)
+      );
+
+      const body = await response.json();
+      expect(body).toMatchObject({
+        registration_endpoint: `${BASE_URL}/oauth/register`,
+      });
+    });
+
+    it("omits registration_endpoint when static client is configured", async () => {
+      stubOAuthEnv();
+
+      const response = await authorizationServerMetadataGET(
+        new NextRequest(`${BASE_URL}/.well-known/oauth-authorization-server`)
+      );
+
+      const body = await response.json();
+      expect(body).not.toHaveProperty("registration_endpoint");
+    });
+  });
+
+  describe("end-to-end dynamic client flow", () => {
+    it("allows a dynamically registered client to complete the OAuth flow", async () => {
+      stubOAuthEnvWithoutStaticClient();
+      const config = getOAuthConfig();
+
+      // 1. Register a client
+      const client = registerClient({
+        redirect_uris: ["https://codex.example/callback"],
+        client_name: "Codex CLI",
+      }, config);
+
+      // 2. Issue an authorization code for the dynamic client
+      const verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+      const challenge = pkceChallenge(verifier);
+
+      const code = issueAuthorizationCode({
+        clientId: client.client_id,
+        redirectUri: "https://codex.example/callback",
+        codeChallenge: challenge,
+        scope: "memory:read",
+      }, config);
+
+      // 3. Verify the authorization code
+      const claims = verifyAuthorizationCode(code, {
+        clientId: client.client_id,
+        redirectUri: "https://codex.example/callback",
+        codeVerifier: verifier,
+        config,
+      });
+
+      expect(claims).toMatchObject({
+        kind: "authorization_code",
+        clientId: client.client_id,
+        scope: "memory:read",
+      });
+
+      // 4. Issue an access token
+      const accessToken = issueAccessToken({
+        clientId: client.client_id,
+        scope: claims!.scope,
+      }, config);
+
+      // 5. Verify the access token
+      const tokenClaims = verifyAccessToken(accessToken, {
+        clientId: client.client_id,
+        requiredScopes: "memory:read",
+        config,
+      });
+
+      expect(tokenClaims).toMatchObject({
+        kind: "access_token",
+        clientId: client.client_id,
+        scope: "memory:read",
+      });
     });
   });
 });
